@@ -1,0 +1,23 @@
+const fs = require('fs'), ts = require('typescript'), vm = require('vm'), assert = require('node:assert/strict');
+const source = ts.transpileModule(fs.readFileSync('src/ChatMessages.jsx','utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React, esModuleInterop: true } }).outputText;
+let slots=[], cursor=0, calls=0, resolveSend, rejectSend;
+const history={items:[{id:'1',senderId:'a',text:'My text'},{id:'2',senderId:'b',text:'Their text'}],loading:false,error:''};
+const react={createElement:(type,props,...children)=>({type,props:props||{},children}),useState:initial=>{const i=cursor++;if(!(i in slots)) slots[i]=initial;return [slots[i],value=>slots[i]=value];},useRef:initial=>{const i=cursor++;return slots[i]||=( {current:initial});},useEffect(){}};
+const output={};
+vm.runInNewContext(source,{exports:output,require:name=>name==='react'?react:name==='./useMessages'?{__esModule:true,default:()=>history}:name==='./useSavedMessages'?{savedMessageId:(c,m)=>c+'_'+m,setMessageSaved:async()=>{}}:name==='./messages'?{MAX_MESSAGE_LENGTH:4000,messageTime:()=> '10:30 AM',sendTextMessage:()=>{calls++;return new Promise((resolve,reject)=>{resolveSend=resolve;rejectSend=reject;});}}:{}});
+const render=()=>{cursor=0;return output.default({uid:'a',conversationId:'chat',person:{name:'dodlet'},Avatar:()=>null});};
+const nodes=t=>!t||typeof t!=='object'?[]:Array.isArray(t)?t.flatMap(nodes):[t,...t.children.flatMap(nodes)];
+const find=(t,p)=>nodes(t).find(p);
+(async()=>{
+ let tree=render();const submit=()=>find(render(),n=>n.type==='form').props.onSubmit({preventDefault(){}});
+ await submit();assert.equal(calls,0);
+ find(tree,n=>n.type==='input').props.onChange({target:{value:'hello'}});
+ const pending=submit();await submit();assert.equal(calls,1);
+ tree=render();assert.equal(find(tree,n=>n.type==='input').props.disabled,true);assert.ok(nodes(tree).some(n=>n.props.className?.includes('outgoing')));assert.ok(nodes(tree).some(n=>n.props.className==='message-row  '));
+ resolveSend();await pending;assert.equal(find(render(),n=>n.type==='input').props.value,'');
+ find(render(),n=>n.type==='input').props.onChange({target:{value:'keep on failure'}});
+ const failed=submit();rejectSend({code:'permission-denied'});await failed;
+ tree=render();assert.equal(find(tree,n=>n.type==='input').props.value,'keep on failure');assert.match(JSON.stringify(tree),/Message not sent/);
+ assert.equal(find(tree,n=>n.props['aria-label']==='Attach a file'),undefined);assert.equal(find(tree,n=>n.props.type==='file'),undefined);
+ console.log('PASS form submission, duplicate lock, disabled input while pending, draft retention on failure, incoming/outgoing styles, text-only composer');
+})().catch(e=>{console.error(e);process.exitCode=1;});
